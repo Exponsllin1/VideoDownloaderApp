@@ -1,0 +1,145 @@
+name: Build Android APK for Python 3.7.5
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04  # 使用 Ubuntu 20.04 确保兼容性
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python 3.7
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.7'
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          git \
+          zip \
+          unzip \
+          openjdk-8-jdk \
+          python3-pip \
+          autoconf \
+          automake \
+          build-essential \
+          ccache \
+          cmake \
+          gettext \
+          libffi-dev \
+          libltdl-dev \
+          libssl-dev \
+          libtool \
+          patch \
+          pkg-config \
+          python3-dev \
+          zlib1g-dev \
+          libncurses5-dev
+
+    - name: Set Java 8 as default
+      run: |
+        sudo update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java
+        sudo update-alternatives --set javac /usr/lib/jvm/java-8-openjdk-amd64/bin/javac
+        echo "JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64" >> $GITHUB_ENV
+
+    - name: Install specific Buildozer version
+      run: |
+        pip install --upgrade pip
+        pip install Cython==0.29.21
+        pip install buildozer==1.2.0
+        pip install virtualenv
+
+    - name: Download Android SDK
+      run: |
+        wget -q https://dl.google.com/android/repository/sdk-tools-linux-4333796.zip
+        mkdir -p ~/android-sdk
+        unzip -q sdk-tools-linux-4333796.zip -d ~/android-sdk
+        echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+        echo "PATH=$HOME/android-sdk/tools/bin:$HOME/android-sdk/platform-tools:$PATH" >> $GITHUB_ENV
+
+    - name: Accept Android licenses
+      run: |
+        yes | $ANDROID_SDK_ROOT/tools/bin/sdkmanager --licenses
+
+    - name: Install Android SDK components
+      run: |
+        $ANDROID_SDK_ROOT/tools/bin/sdkmanager "platforms;android-28" "build-tools;28.0.3" "platform-tools" "tools"
+
+    - name: Download Android NDK
+      run: |
+        wget -q https://dl.google.com/android/repository/android-ndk-r19c-linux-x86_64.zip
+        unzip -q android-ndk-r19c-linux-x86_64.zip -d ~/
+        echo "ANDROID_NDK_HOME=$HOME/android-ndk-r19c" >> $GITHUB_ENV
+        echo "PATH=$HOME/android-ndk-r19c:$PATH" >> $GITHUB_ENV
+
+    - name: Create local buildozer config
+      run: |
+        buildozer init
+        # 备份并替换为我们的配置
+        cp buildozer.spec buildozer.spec.backup
+        # 确保使用我们的专用配置
+
+    - name: Cache Buildozer dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.buildozer
+          .buildozer
+        key: ${{ runner.os }}-python37-buildozer-${{ hashFiles('buildozer.spec') }}
+        restore-keys: |
+          ${{ runner.os }}-python37-buildozer-
+
+    - name: Build APK (第一次尝试)
+      run: |
+        buildozer -v android debug || echo "第一次构建可能失败，继续尝试..."
+
+    - name: Clean and retry build
+      run: |
+        buildozer android clean
+        buildozer -v android debug
+
+    - name: Check if APK exists
+      id: check_apk
+      run: |
+        if ls bin/*.apk 1> /dev/null 2>&1; then
+          echo "APK found"
+          echo "::set-output name=apk_exists::true"
+        else
+          echo "APK not found, trying alternative build method"
+          echo "::set-output name=apk_exists::false"
+        fi
+
+    - name: Alternative build method
+      if: steps.check_apk.outputs.apk_exists == 'false'
+      run: |
+        # 使用更详细的构建方式
+        buildozer android clean
+        buildozer android update
+        buildozer android deploy
+        buildozer android debug
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: videodownloader-apk
+        path: bin/*.apk
+        retention-days: 30
+        if-no-files-found: error
+
+    - name: Upload build logs
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-logs
+        path: |
+          .buildozer
+          buildozer.spec
+        retention-days: 30
